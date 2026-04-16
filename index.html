@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tweede Kamer Agenda</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f3; color: #1a1a1a; padding: 1.5rem; max-width: 800px; margin: 0 auto; }
+    h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
+    #status-text { font-size: 13px; color: #888; margin-bottom: 1.25rem; }
+    .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 1rem; }
+    .filter-btn { font-size: 12px; padding: 4px 14px; border-radius: 20px; border: 1px solid #ccc; cursor: pointer; background: #eee; color: #555; transition: all 0.15s; }
+    .filter-btn.plenair.active { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+    .filter-btn.commissie.active { background: #dcfce7; color: #166534; border-color: #86efac; }
+    .filter-btn.overig.active { background: #f3f4f6; color: #374151; border-color: #d1d5db; }
+    select, button.action { font-size: 13px; padding: 5px 12px; border: 1px solid #ccc; border-radius: 6px; background: white; cursor: pointer; }
+    button.action:hover { background: #f3f4f6; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 1.5rem; }
+    .stat-card { background: white; border-radius: 8px; padding: 12px 16px; border: 1px solid #e5e5e5; }
+    .stat-card p.label { font-size: 12px; color: #888; margin-bottom: 4px; }
+    .stat-card p.value { font-size: 22px; font-weight: 500; }
+    .day-header { font-size: 12px; font-weight: 500; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin: 16px 0 8px; }
+    .event-card { background: white; border: 1px solid #e5e5e5; border-radius: 10px; padding: 12px 16px; margin-bottom: 8px; display: flex; gap: 14px; }
+    .event-card:hover { border-color: #bbb; }
+    .time-col { font-size: 13px; color: #888; min-width: 90px; padding-top: 3px; }
+    .badge { font-size: 11px; padding: 2px 9px; border-radius: 20px; font-weight: 500; }
+    .badge-plenair { background: #dbeafe; color: #1e40af; }
+    .badge-commissie { background: #dcfce7; color: #166534; }
+    .badge-overig { background: #f3f4f6; color: #374151; }
+    .event-title { font-size: 14px; font-weight: 500; margin-top: 4px; line-height: 1.4; }
+    .event-soort { font-size: 12px; color: #888; margin-top: 2px; }
+    .empty-state { text-align: center; padding: 3rem 1rem; color: #888; font-size: 14px; background: white; border-radius: 10px; border: 1px solid #e5e5e5; }
+    footer { font-size: 11px; color: #bbb; margin-top: 1.5rem; }
+    @media (max-width: 500px) { .stats { grid-template-columns: 1fr 1fr; } .time-col { min-width: 65px; font-size: 12px; } }
+  </style>
+</head>
+<body>
+
+<h1>Tweede Kamer agenda</h1>
+<p id="status-text">Verbinding maken...</p>
+
+<div class="controls">
+  <button class="filter-btn plenair active" onclick="toggleFilter('plenair', this)">Plenair</button>
+  <button class="filter-btn commissie active" onclick="toggleFilter('commissie', this)">Commissie</button>
+  <button class="filter-btn overig" onclick="toggleFilter('overig', this)">Overig</button>
+  <select id="week-select" onchange="fetchData()">
+    <option value="0">Deze week</option>
+    <option value="1">Volgende week</option>
+    <option value="2">Over 2 weken</option>
+    <option value="-1">Vorige week</option>
+  </select>
+  <button class="action" onclick="fetchData()">↺ Vernieuwen</button>
+  <button class="action" onclick="exportICS()">⬇ Exporteer .ics</button>
+</div>
+
+<div class="stats">
+  <div class="stat-card"><p class="label">Plenair</p><p class="value" id="count-plenair">—</p></div>
+  <div class="stat-card"><p class="label">Commissie</p><p class="value" id="count-commissie">—</p></div>
+  <div class="stat-card"><p class="label">Totaal</p><p class="value" id="count-totaal">—</p></div>
+</div>
+
+<div id="agenda-list"></div>
+
+<footer>Bron: Open Data Portaal Tweede Kamer · Exporteer .ics voor Google Calendar, Outlook of Apple Calendar</footer>
+
+<script>
+  const BASE = 'https://gegevensmagazijn.tweedekamer.nl/OData/v4/2.0';
+  let allEvents = [];
+  let activeFilters = new Set(['plenair', 'commissie']);
+
+  function getWeekRange(offset) {
+    const now = new Date();
+    const day = now.getDay();
+    const diffToMon = (day === 0 ? -6 : 1 - day);
+    const mon = new Date(now);
+    mon.setDate(now.getDate() + diffToMon + offset * 7);
+    mon.setHours(0, 0, 0, 0);
+    const sun = new Date(mon);
+    sun.setDate(mon.getDate() + 6);
+    sun.setHours(23, 59, 59, 0);
+    return { from: mon, to: sun };
+  }
+
+  function classifyType(item) {
+    const soort = (item.Soort || '').toLowerCase();
+    const titel = (item.Titel || '').toLowerCase();
+    if (soort.includes('plenair') || titel.includes('plenaire')) return 'plenair';
+    if (soort.includes('commissie') || titel.includes('commissie')) return 'commissie';
+    return 'overig';
+  }
+
+  async function fetchData() {
+    const offset = parseInt(document.getElementById('week-select').value);
+    const { from, to } = getWeekRange(offset);
+    document.getElementById('status-text').textContent = 'Vergaderingen ophalen...';
+    document.getElementById('agenda-list').innerHTML = '';
+
+    try {
+      const url = `${BASE}/Vergadering?$filter=Verwijderd eq false and GeplandAanvang ge ${from.toISOString()} and GeplandAanvang le ${to.toISOString()}&$orderby=GeplandAanvang asc&$select=Id,Titel,GeplandAanvang,GeplandEinde,Soort,Locatie&$top=100`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+
+      allEvents = (data.value || []).map(v => ({
+        id: v.Id,
+        title: v.Titel || 'Vergadering',
+        start: new Date(v.GeplandAanvang),
+        end: v.GeplandEinde ? new Date(v.GeplandEinde) : null,
+        soort: v.Soort || '',
+        locatie: v.Locatie || '',
+        type: classifyType(v)
+      }));
+
+      const fromStr = from.toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' });
+      const toStr = to.toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' });
+      document.getElementById('status-text').textContent = `${allEvents.length} vergaderingen · ${fromStr} – ${toStr}`;
+      renderEvents();
+    } catch (e) {
+      document.getElementById('status-text').textContent = 'Fout bij ophalen data.';
+      document.getElementById('agenda-list').innerHTML = '<div class="empty-state">Kon geen verbinding maken met het Open Data Portaal van de Tweede Kamer.</div>';
+    }
+  }
+
+  function toggleFilter(type, btn) {
+    if (activeFilters.has(type)) {
+      activeFilters.delete(type);
+      btn.classList.remove('active');
+    } else {
+      activeFilters.add(type);
+      btn.classList.add('active');
+    }
+    renderEvents();
+  }
+
+  function renderEvents() {
+    const filtered = allEvents.filter(e => activeFilters.has(e.type));
+    document.getElementById('count-plenair').textContent = allEvents.filter(e => e.type === 'plenair').length;
+    document.getElementById('count-commissie').textContent = allEvents.filter(e => e.type === 'commissie').length;
+    document.getElementById('count-totaal').textContent = allEvents.length;
+
+    if (!filtered.length) {
+      document.getElementById('agenda-list').innerHTML = '<div class="empty-state">Geen vergaderingen gevonden voor deze filters.</div>';
+      return;
+    }
+
+    const byDay = {};
+    filtered.forEach(e => {
+      const key = e.start.toDateString();
+      if (!byDay[key]) byDay[key] = { date: e.start, events: [] };
+      byDay[key].events.push(e);
+    });
+
+    let html = '';
+    Object.values(byDay).forEach(day => {
+      const dayStr = day.date.toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long' });
+      html += `<div class="day-header">${dayStr}</div>`;
+      day.events.forEach(e => {
+        const timeStr = e.end
+          ? `${e.start.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })} – ${e.end.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}`
+          : e.start.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+        const label = e.type === 'plenair' ? 'Plenair' : e.type === 'commissie' ? 'Commissie' : 'Overig';
+        const locStr = e.locatie ? `<span style="font-size:12px;color:#aaa;margin-left:6px;">📍 ${e.locatie}</span>` : '';
+        html += `<div class="event-card">
+          <div class="time-col">${timeStr}</div>
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;">
+              <span class="badge badge-${e.type}">${label}</span>${locStr}
+            </div>
+            <p class="event-title">${e.title}</p>
+            ${e.soort && e.soort !== e.title ? `<p class="event-soort">${e.soort}</p>` : ''}
+          </div>
+        </div>`;
+      });
+    });
+    document.getElementById('agenda-list').innerHTML = html;
+  }
+
+  function exportICS() {
+    const filtered = allEvents.filter(e => activeFilters.has(e.type));
+    if (!filtered.length) { alert('Geen evenementen om te exporteren.'); return; }
+    function icsDate(d) { return d.toISOString().replace(/[-:]/g, '').replace('.000', ''); }
+    let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Tweede Kamer Agenda//NL\r\nCALSCALE:GREGORIAN\r\nX-WR-CALNAME:Tweede Kamer\r\n';
+    filtered.forEach(e => {
+      const end = e.end || new Date(e.start.getTime() + 3600000);
+      ics += `BEGIN:VEVENT\r\nUID:${e.id}@tweedekamer.nl\r\nDTSTART:${icsDate(e.start)}\r\nDTEND:${icsDate(end)}\r\nSUMMARY:${e.title.replace(/,/g, '\\,')}\r\nDESCRIPTION:${e.soort}\r\nLOCATION:${e.locatie}\r\nEND:VEVENT\r\n`;
+    });
+    ics += 'END:VCALENDAR';
+    const blob = new Blob([ics], { type: 'text/calendar' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tweedekamer-agenda.ics';
+    a.click();
+  }
+
+  fetchData();
+</script>
+</body>
+</html>
